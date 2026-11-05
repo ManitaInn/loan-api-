@@ -17,6 +17,11 @@ concurrency:
   group: production-${{ github.ref }}
   cancel-in-progress: false
 
+# bash with -eo pipefail, so `script | tee log` still fails when the script fails
+defaults:
+  run:
+    shell: bash
+
 env:
   IMAGE: docker.io/${{ vars.DOCKERHUB_USERNAME }}/loan-api
 
