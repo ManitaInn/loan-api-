@@ -13,13 +13,18 @@ RUN pip install --upgrade pip && pip install -r requirements.txt && pip uninstal
 # ---- Stage 2: the runtime image, only what the API needs ----
 FROM python:3.12-slim AS runtime
 
+# The commit this image was built from; shown on /health so the pipeline can verify the release.
+ARG GIT_SHA=unknown
+
 # Apply the latest security fixes for the OS packages.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* && /usr/local/bin/python -m pip uninstall -y pip
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    MODEL_PATH=/app/model/model.json
+    MODEL_PATH=/app/model/model.json \
+    GIT_SHA=${GIT_SHA} \
+    PORT=8000
 
 # Unprivileged user: the API never runs as root.
 RUN groupadd --system app && useradd --system --gid app --no-create-home app
@@ -33,6 +38,7 @@ USER app
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+  CMD python -c "import os, urllib.request as u; u.urlopen('http://localhost:%s/health' % os.environ.get('PORT', '8000'), timeout=2)"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render sets $PORT; locally it defaults to 8000. exec keeps uvicorn as PID 1 so it receives stop signals.
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT}"]

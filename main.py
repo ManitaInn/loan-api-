@@ -2,20 +2,26 @@
 
 Configuration comes only from environment variables:
   MODEL_PATH    path to the model JSON file          (default: model/model.json)
+  API_KEY       key clients must send in the X-API-Key header to call /predictions
   DATABASE_URL  optional Postgres URL; when set, every prediction is saved
+  GIT_SHA       commit the image was built from (set by the pipeline, shown on /health)
 """
 import json
 import logging
 import math
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "model/model.json"))
 DATABASE_URL = os.getenv("DATABASE_URL")  # never hard-coded: set by compose.yaml or the platform
+GIT_SHA = os.getenv("GIT_SHA", "unknown")  # not a secret: identifies the release
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 log = logging.getLogger("loan-api")
 state: dict = {}
@@ -53,7 +59,18 @@ async def lifespan(app: FastAPI):
     state.clear()
 
 
-app = FastAPI(title="Loan Prediction API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Loan Prediction API", version="1.1.0", lifespan=lifespan)
+
+
+def require_api_key(key: str | None = Security(api_key_header)) -> None:
+    """401 when the header is missing, 403 when it is wrong. The key lives only in the environment."""
+    expected = os.getenv("API_KEY")
+    if not expected:
+        raise HTTPException(status_code=503, detail="API key not configured")
+    if key is None:
+        raise HTTPException(status_code=401, detail="Missing API key", headers={"WWW-Authenticate": "API-Key"})
+    if not secrets.compare_digest(key, expected):
+        raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 class LoanApplication(BaseModel):
@@ -75,10 +92,10 @@ def health():
     """Used by the Docker HEALTHCHECK and by Compose."""
     if "model" not in state:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    return {"status": "ok", "model_version": state["model"].get("version", "unknown")}
+    return {"status": "ok", "git_sha": GIT_SHA, "model_version": state["model"].get("version", "unknown")}
 
 
-@app.post("/predictions", response_model=Prediction, status_code=200)
+@app.post("/predictions", response_model=Prediction, status_code=200, dependencies=[Depends(require_api_key)])
 def predict(application: LoanApplication):
     model = state["model"]
     values = application.model_dump()

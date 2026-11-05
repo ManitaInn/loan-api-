@@ -8,6 +8,7 @@ services:
       - "8000:8000"
     environment:
       MODEL_PATH: /app/model/model.json
+      API_KEY: ${API_KEY:-local-dev-key}   # development-only default; production key is set in Render
       DATABASE_URL: postgresql://loan:loan_dev_password@db:5432/loans
     depends_on:
       db:
