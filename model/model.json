@@ -29,5 +29,5 @@
     0.542284
   ],
   "intercept": -1.410246,
-  "threshold": 0.5
+  "threshold": 0.03
 }
