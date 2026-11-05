@@ -54,3 +54,12 @@ def test_wrong_api_key_is_403():
 def test_correct_api_key_is_200():
     with TestClient(app) as client:
         assert client.post("/predictions", json=GOOD, headers=AUTH).status_code == 200
+
+
+# --- risk_level (added in the improvement PR) ---
+def test_prediction_includes_risk_level():
+    safe = {"amount_usd": 800, "term_months": 24, "monthly_income_usd": 1800, "age": 45, "existing_loans": 0}
+    risky = {"amount_usd": 5000, "term_months": 3, "monthly_income_usd": 200, "age": 22, "existing_loans": 3}
+    with TestClient(app) as client:
+        assert client.post("/predictions", json=safe, headers=AUTH).json()["risk_level"] == "low"
+        assert client.post("/predictions", json=risky, headers=AUTH).json()["risk_level"] == "high"

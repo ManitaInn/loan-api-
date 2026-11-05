@@ -81,8 +81,16 @@ class LoanApplication(BaseModel):
     existing_loans: int = Field(..., ge=0, le=20, description="Number of loans the borrower already has", examples=[1])
 
 
+RISK_BANDS = [(0.15, "low"), (0.40, "medium"), (1.01, "high")]  # upper bounds on the default probability
+
+
+def risk_level(probability: float) -> str:
+    return next(label for upper, label in RISK_BANDS if probability < upper)
+
+
 class Prediction(BaseModel):
     default_probability: float = Field(..., description="Probability (0-1) that the borrower defaults")
+    risk_level: str = Field(..., description="low (< 0.15), medium (< 0.40) or high: for loan officers at a glance")
     approved: bool = Field(..., description="True when the probability is below the model threshold")
     model_version: str
 
@@ -106,5 +114,5 @@ def predict(application: LoanApplication):
     probability = round(1 / (1 + math.exp(-z)), 4)
     approved = probability < model["threshold"]
     save_prediction(values, probability, approved)
-    return Prediction(default_probability=probability, approved=approved,
+    return Prediction(default_probability=probability, risk_level=risk_level(probability), approved=approved,
                       model_version=model.get("version", "unknown"))
