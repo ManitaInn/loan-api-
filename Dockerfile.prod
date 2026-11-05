@@ -8,13 +8,13 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt && pip uninstall -y pip
 
 # ---- Stage 2: the runtime image, only what the API needs ----
 FROM python:3.12-slim AS runtime
 
 # Apply the latest security fixes for the OS packages.
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* && /usr/local/bin/python -m pip uninstall -y pip
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
