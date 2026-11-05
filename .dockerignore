@@ -20,3 +20,8 @@ init.sql
 CHECKLIST.md
 README.md
 *.md
+mlflow.db
+mlartifacts
+mlruns
+data
+*.png

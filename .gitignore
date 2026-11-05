@@ -5,3 +5,9 @@ __pycache__/
 venv/
 .env
 .env.*
+# MLflow local state (recreated by the scripts)
+mlflow.db
+mlartifacts/
+mlruns/
+data/
+monitor_report.csv
