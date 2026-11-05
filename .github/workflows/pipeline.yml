@@ -1,0 +1,126 @@
+# One pipeline for the loan service.
+#   Pull request -> test
+#   Merge to main -> test -> build & push image -> deploy to Render -> verify live release
+#                    -> promote (tag last-good)   or   -> automatic rollback to last-good
+# Production is ONLY changed by this workflow: the Render service is image-backed and has
+# no auto-deploy, so nothing reaches it unless the deploy job calls the secret deploy hook.
+name: pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: docker.io/${{ vars.DOCKERHUB_USERNAME }}/loan-api
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.prod
+          platforms: linux/amd64
+          push: true
+          build-args: GIT_SHA=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy of this exact image
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          IMG=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "${IMAGE}:${GITHUB_SHA}")
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${HOOK}&imgURL=${IMG}")
+          echo "Render deploy hook answered HTTP ${code} for ${IMAGE}:${GITHUB_SHA}"
+          test "$code" = "200"
+
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the live release
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          MERGED_AT: ${{ github.event.head_commit.timestamp }}
+        run: python3 scripts/verify_release.py --expect-sha "${GITHUB_SHA}" | tee verify.log
+      - name: Add the verify log to the run summary
+        if: always()
+        run: |
+          { echo '### Verify log'; echo '```'; cat verify.log 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Mark this release as the last good one
+        run: docker buildx imagetools create -t "${IMAGE}:last-good" "${IMAGE}:${GITHUB_SHA}"
+
+  rollback:
+    needs: verify
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Redeploy the last good image
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          echo "ROLLBACK_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          IMG=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "${IMAGE}:last-good")
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${HOOK}&imgURL=${IMG}")
+          echo "Render deploy hook answered HTTP ${code} for ${IMAGE}:last-good"
+          test "$code" = "200"
+      - name: Verify recovery
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          MERGED_AT="$ROLLBACK_STARTED" python3 scripts/verify_release.py --expect-not-sha "${GITHUB_SHA}" \
+            | sed 's/TIMING merge to live/TIMING rollback to recovered/' | tee rollback.log
+      - name: Add the rollback log to the run summary
+        if: always()
+        run: |
+          { echo '### Rollback log'; echo '```'; cat rollback.log 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail the run so the bad release stays visible
+        run: exit 1
